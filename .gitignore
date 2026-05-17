@@ -1,0 +1,6 @@
+*.txt
+.env
+.hf
+__pycache__
+data.csv
+*.pt
