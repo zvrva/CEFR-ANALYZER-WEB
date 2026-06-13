@@ -24,3 +24,7 @@ class RegisterRequest(BaseModel):
 class LoginRequest(BaseModel):
     email: Optional[str] = None
     password: Optional[str] = None
+
+
+class AnalyzeRequest(BaseModel):
+    text: str

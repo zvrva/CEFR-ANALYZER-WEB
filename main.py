@@ -1,13 +1,17 @@
 import os
 from pathlib import Path
+from io import BytesIO
+from io import StringIO
+from uuid import uuid4
+import csv
 
 import re
 import pandas as pd
 from random import choice
 from datetime import datetime
 
-from fastapi import FastAPI, File, UploadFile, Depends
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi import FastAPI, File, UploadFile, Depends, BackgroundTasks, HTTPException
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from sqlalchemy.orm import Session
@@ -15,7 +19,7 @@ from sqlalchemy.orm import Session
 
 from datetime import datetime
 
-from db import get_db
+from db import get_db, SyncSessionLocal
 
 from fastapi.security import OAuth2PasswordRequestForm
 
@@ -23,14 +27,16 @@ if "HF_HOME" not in os.environ:
     os.environ["HF_HOME"] = str(Path(__file__).resolve().parent / ".hf")
 
 
-from db import get_db
-
-from schemas import HistoryRequest, RegisterRequest, LoginRequest
+from schemas import HistoryRequest, RegisterRequest, LoginRequest, AnalyzeRequest
 from utils import clean_russian_words_only, clean_text, create_linguistic_report, level_to_cefr, is_text_meaningful, is_text_analyzable, validate_password_complexity, get_current_user, create_access_token, verify_password, hash_password, TextClassifierService
 from models import LevelsCRUD, Texts, Levels, ErrorsCRUD, TextsCRUD, UsersCRUD, Users
 
 app = FastAPI()
 app.mount("/frontend", StaticFiles(directory=str(Path(__file__).resolve().parent / "frontend")), name="frontend")
+
+UPLOAD_JOBS = {}
+UPLOAD_RESULTS_DIR = Path(__file__).resolve().parent / "upload_results"
+UPLOAD_RESULTS_DIR.mkdir(exist_ok=True)
 
 
 
@@ -45,6 +51,100 @@ def load_model():
 
 
 
+
+
+def process_csv_upload(job_id: str, file_bytes: bytes, user_id: str):
+    db = SyncSessionLocal()
+
+    try:
+        df = pd.read_csv(BytesIO(file_bytes), encoding="utf-8", header=None)
+
+        UPLOAD_JOBS[job_id]["status"] = "running"
+        UPLOAD_JOBS[job_id]["total"] = len(df.index)
+        UPLOAD_JOBS[job_id]["processed"] = 0
+
+        results = []
+        warnings = []
+
+        for index, raw_text in enumerate(df[0], start=1):
+            text = str(raw_text) if not pd.isna(raw_text) else ""
+            text = re.sub(r"\s+", " ", text).strip()
+
+            if len(text.split()) < 5:
+                errors = ErrorsCRUD(text=text).find(db)
+                if not errors:
+                    ErrorsCRUD(text=text, description="TOO SHORT").add(db)
+                results.append("Text is too short. Please provide a text with at least 5 words.")
+                warnings.append(" ")
+                UPLOAD_JOBS[job_id]["processed"] = index
+                continue
+
+            if len(text.split()) > 512:
+                errors = ErrorsCRUD(text=text).find(db)
+                if not errors:
+                    ErrorsCRUD(text=text, description="TOO LONG").add(db)
+                results.append("Text is too long. Please provide a text with no more than 512 words.")
+                warnings.append(" ")
+                UPLOAD_JOBS[job_id]["processed"] = index
+                continue
+
+            russian_text = clean_russian_words_only(text)
+            if len(russian_text.split()) < 5:
+                errors = ErrorsCRUD(text=text).find(db)
+                if not errors:
+                    ErrorsCRUD(text=text, description="TOO SHORT").add(db)
+                results.append("Text contains too few Russian words. Please provide a text with at least 5 Russian words.")
+                warnings.append(" ")
+                UPLOAD_JOBS[job_id]["processed"] = index
+                continue
+
+            text = clean_text(text)
+
+            if not is_text_analyzable(text):
+                errors = ErrorsCRUD(text=text).find(db)
+                if not errors:
+                    ErrorsCRUD(text=text, description="NOT MEANINGFUL").add(db)
+                results.append("The text is not meaningful. Please provide a meaningful text.")
+                warnings.append(" ")
+                UPLOAD_JOBS[job_id]["processed"] = index
+                continue
+
+            now = datetime.now()
+            linguistic_report = create_linguistic_report(text)
+            level = choice([1, 2, 3, 4, 5, 6])
+            level_cefr = level_to_cefr(level)
+            level_id = LevelsCRUD(level=level_cefr).find(db)
+
+            TextsCRUD(
+                user_id=user_id,
+                text=text,
+                linguistic_report=linguistic_report,
+                level_id=str(level_id),
+                is_from_csv=True,
+                analyzed_at=now.strftime("%Y-%m-%d %H:%M:%S")
+            ).add(db)
+
+            results.append(level_cefr)
+            if not is_text_meaningful(text):
+                warnings.append("TEXT MAY BE NOT MEANINGFUL. RESULTS MAY BE INACCURATE.")
+            else:
+                warnings.append(" ")
+
+            UPLOAD_JOBS[job_id]["processed"] = index
+
+        df["results"] = results
+        df["warnings"] = warnings
+
+        result_path = UPLOAD_RESULTS_DIR / f"{job_id}.csv"
+        df.to_csv(result_path, index=False, header=False)
+
+        UPLOAD_JOBS[job_id]["status"] = "completed"
+        UPLOAD_JOBS[job_id]["result_path"] = str(result_path)
+    except Exception as exc:
+        UPLOAD_JOBS[job_id]["status"] = "failed"
+        UPLOAD_JOBS[job_id]["error"] = str(exc)
+    finally:
+        db.close()
 
 
 @app.post("/register")
@@ -106,7 +206,8 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
 
 
 @app.post("/analyze")
-def analyze(text: str, db: Session = Depends(get_db), current_user: Users = Depends(get_current_user)):
+def analyze(req: AnalyzeRequest, db: Session = Depends(get_db), current_user: Users = Depends(get_current_user)):
+    text = req.text
 
     text = re.sub(r'\s+', ' ', text)
     text = text.strip()
@@ -169,89 +270,55 @@ def analyze(text: str, db: Session = Depends(get_db), current_user: Users = Depe
 
     
 @app.post("/upload")
-def upload(file: UploadFile = File(...), db: Session = Depends(get_db), current_user: Users = Depends(get_current_user)):
-    df = pd.read_csv(file.file, encoding='utf-8', header=None)
-    
-    file.file.close()
+async def upload(background_tasks: BackgroundTasks, file: UploadFile = File(...), current_user: Users = Depends(get_current_user)):
+    file_bytes = await file.read()
+    await file.close()
 
-    results = []
-    warnings = []
+    job_id = str(uuid4())
+    UPLOAD_JOBS[job_id] = {
+        "user_id": str(current_user.id),
+        "status": "queued",
+        "processed": 0,
+        "total": 0,
+        "result_path": None,
+        "error": None,
+    }
 
-    for text in df[0]:
+    background_tasks.add_task(process_csv_upload, job_id, file_bytes, str(current_user.id))
 
-        text = re.sub(r'\s+', ' ', text)
-        text = text.strip()
+    return {"job_id": job_id, "status": "queued"}
 
-        if len(text.split()) < 5:
-            errors = ErrorsCRUD(text=text).find(db)
-            if not errors:
-                ErrorsCRUD(text=text, description='TOO SHORT').add(db)
-            results.append("Text is too short. Please provide a text with at least 5 words.")
-            warnings.append(" ")
-            continue
-        
-        if len(text.split()) > 512:
-            errors = ErrorsCRUD(text=text).find(db)
-            if not errors:
-                ErrorsCRUD(text=text, description='TOO LONG').add(db)
-            results.append("Text is too long. Please provide a text with no more than 512 words.")
-            warnings.append(" ")
-            continue
-        
-        russian_text = clean_russian_words_only(text)
-        if len(russian_text.split()) < 5:
-            errors = ErrorsCRUD(text=text).find(db)
-            if not errors:
-                ErrorsCRUD(text=text, description='TOO SHORT').add(db)
-            results.append("Text contains too few Russian words. Please provide a text with at least 5 Russian words.")
-            warnings.append(" ")
-            continue
-        
-        text = clean_text(text)
 
-        if not is_text_analyzable(text):
-            errors = ErrorsCRUD(text=text).find(db)
-            if not errors:
-                ErrorsCRUD(text=text, description='NOT MEANINGFUL').add(db)
-            results.append("The text is not meaningful. Please provide a meaningful text.")
-            warnings.append(" ")
-            continue
-        
-        else:
-            now = datetime.now()
+@app.get("/upload/status/{job_id}")
+def upload_status(job_id: str, current_user: Users = Depends(get_current_user)):
+    job = UPLOAD_JOBS.get(job_id)
+    if not job or job["user_id"] != str(current_user.id):
+        raise HTTPException(status_code=404, detail="Upload job not found.")
 
-            linguistic_report = create_linguistic_report(text)
+    return {
+        "job_id": job_id,
+        "status": job["status"],
+        "processed": job["processed"],
+        "total": job["total"],
+        "error": job["error"],
+    }
 
-            level = choice([1, 2, 3, 4, 5, 6])
-            level_cefr = level_to_cefr(level)
-            
-            level_id = LevelsCRUD(level=level_cefr).find(db)
 
-            TextsCRUD(
-                user_id=str(current_user.id),
-                text=text,  
-                linguistic_report=linguistic_report,
-                level_id=str(level_id),
-                is_from_csv=True,
-                analyzed_at=now.strftime("%Y-%m-%d %H:%M:%S")
-            ).add(db)
+@app.get("/upload/result/{job_id}")
+def upload_result(job_id: str, current_user: Users = Depends(get_current_user)):
+    job = UPLOAD_JOBS.get(job_id)
+    if not job or job["user_id"] != str(current_user.id):
+        raise HTTPException(status_code=404, detail="Upload job not found.")
 
-            results.append(level_cefr)
-            if not is_text_meaningful(text):
-                warnings.append("TEXT MAY BE NOT MEANINGFUL. RESULTS MAY BE INACCURATE.")
-            else:
-                warnings.append(" ")
+    if job["status"] != "completed" or not job["result_path"]:
+        raise HTTPException(status_code=409, detail="Upload job is not completed yet.")
 
-    df['results'] = results
-    df['warnings'] = warnings
-    df.to_csv('results.csv', index=False, header=False)
-    return FileResponse(path='results.csv', filename='results.csv', media_type='multipart/form-data')
+    return FileResponse(path=job["result_path"], filename="results.csv", media_type="text/csv")
 
 
 CEFR_LEVEL_ORDER = ["A1", "A2", "B1", "B2", "C1", "C2"]
 
-@app.post("/history")
-def history(req: HistoryRequest, db: Session = Depends(get_db), current_user: Users = Depends(get_current_user)):
+def build_history_rows(req: HistoryRequest, db: Session, current_user: Users):
     query = db.query(
         Texts.text,
         Levels.level,
@@ -283,8 +350,31 @@ def history(req: HistoryRequest, db: Session = Depends(get_db), current_user: Us
     elif req.sort_by == "level_desc":
         rows.sort(key=lambda x: level_rank.get(x.level, len(level_rank)), reverse=True)
 
-    history = [{"text": r.text, "level": r.level, "analyzed_at": r.analyzed_at} for r in rows]
+    return [{"text": r.text, "level": r.level, "analyzed_at": r.analyzed_at} for r in rows]
+
+
+@app.post("/history")
+def history(req: HistoryRequest, db: Session = Depends(get_db), current_user: Users = Depends(get_current_user)):
+    history = build_history_rows(req, db, current_user)
     return {"history": history}
+
+
+@app.post("/history/export")
+def export_history(req: HistoryRequest, db: Session = Depends(get_db), current_user: Users = Depends(get_current_user)):
+    history = build_history_rows(req, db, current_user)
+
+    buffer = StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(["text", "level", "analyzed_at"])
+    for row in history:
+        writer.writerow([row["text"], row["level"], row["analyzed_at"]])
+
+    buffer.seek(0)
+    return StreamingResponse(
+        iter([buffer.getvalue()]),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="history.csv"'}
+    )
 
 
 @app.get("/", response_class=FileResponse)
@@ -292,27 +382,27 @@ def get_root():
     return FileResponse(str(Path(__file__).resolve().parent / "frontend" / "index.html"))
 
 
-@app.post("/register")
+@app.get("/register", response_class=FileResponse)
 def get_register_page():
-    return RedirectResponse(url="/analyze")
+    return FileResponse(str(Path(__file__).resolve().parent / "frontend" / "register.html"))
 
 
-@app.post("/login", response_class=FileResponse)
+@app.get("/login", response_class=FileResponse)
 def get_login_page():
     return FileResponse(str(Path(__file__).resolve().parent / "frontend" / "login.html"))
 
 
-@app.post("/analyze", response_class=FileResponse)
+@app.get("/analyze", response_class=FileResponse)
 def get_analyze_page():
     return FileResponse(str(Path(__file__).resolve().parent / "frontend" / "analyze.html"))
 
 
-@app.post("/upload", response_class=FileResponse)
+@app.get("/upload", response_class=FileResponse)
 def get_upload_page():
     return FileResponse(str(Path(__file__).resolve().parent / "frontend" / "upload.html"))
 
 
-@app.post("/history", response_class=FileResponse)
+@app.get("/history", response_class=FileResponse)
 def get_history_page():
     return FileResponse(str(Path(__file__).resolve().parent / "frontend" / "history.html"))
 

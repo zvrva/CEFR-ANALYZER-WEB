@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Загрузка CSV</title>
+  <title>Анализ текстов из CSV</title>
   <style>
     body {
       margin: 0;
@@ -22,6 +22,15 @@
     h1 {
       margin-top: 0;
       color: #0f172a;
+    }
+    .hint {
+      margin-top: 12px;
+      padding: 14px 16px;
+      border-radius: 12px;
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+      color: #1e3a8a;
+      line-height: 1.5;
     }
     label {
       display: block;
@@ -45,6 +54,10 @@
     button:hover {
       background: #3b82f6;
     }
+    button:disabled {
+      background: #93c5fd;
+      cursor: wait;
+    }
     .message {
       margin-top: 18px;
       padding: 16px;
@@ -54,6 +67,11 @@
       color: #0f172a;
       white-space: pre-wrap;
     }
+    .message.error {
+      background: #fef2f2;
+      border-color: #fecaca;
+      color: #991b1b;
+    }
     .nav {
       margin-bottom: 24px;
     }
@@ -61,103 +79,211 @@
       color: #2563eb;
       text-decoration: none;
     }
+    .progress-card {
+      display: none;
+      margin-top: 18px;
+      padding: 18px;
+      border-radius: 14px;
+      background: #f8fafc;
+      border: 1px solid #dbeafe;
+    }
+    progress {
+      width: 100%;
+      height: 18px;
+      margin-top: 10px;
+    }
+    .progress-title {
+      margin: 0;
+      font-size: 1rem;
+      font-weight: 600;
+      color: #0f172a;
+    }
+    .progress-text {
+      margin-top: 10px;
+      color: #475569;
+      font-size: 0.95rem;
+    }
   </style>
 </head>
 <body>
   <main class="container">
     <div class="nav"><a href="/">← Главная</a></div>
-    <h1>Загрузка CSV</h1>
+    <h1>Анализ текстов из CSV</h1>
+    <div class="hint">
+      CSV-файл должен содержать ровно один столбец с текстами и быть без заголовка.
+    </div>
     <form id="uploadForm">
       <label for="file">Файл CSV</label>
       <input id="file" name="file" type="file" accept=".csv" required />
-      <button type="submit">Загрузить</button>
+      <button id="submitButton" type="submit">Начать анализ</button>
     </form>
-    <div id="progressContainer" style="display:none; margin-top:18px;">
-      <label for="uploadProgress">Загрузка CSV</label>
-      <progress id="uploadProgress" value="0" max="100" style="width:100%; height:18px; border-radius:10px;"></progress>
-      <div id="progressText" style="margin-top:8px; color:#475569; font-size:0.95rem;"></div>
+
+    <div id="progressCard" class="progress-card">
+      <p class="progress-title">Анализ текста</p>
+      <progress id="analysisProgress" value="0" max="100"></progress>
+      <div id="progressText" class="progress-text"></div>
     </div>
+
     <div id="message" class="message" style="display:none"></div>
   </main>
+
   <script>
     const baseUrl = window.location.origin;
     const form = document.getElementById('uploadForm');
     const message = document.getElementById('message');
-    const progressContainer = document.getElementById('progressContainer');
-    const progressBar = document.getElementById('uploadProgress');
+    const progressCard = document.getElementById('progressCard');
+    const progressBar = document.getElementById('analysisProgress');
     const progressText = document.getElementById('progressText');
+    const submitButton = document.getElementById('submitButton');
 
-    const setProgress = (percent, text) => {
-      progressBar.value = percent;
-      progressText.textContent = text;
+    let pollTimer = null;
+
+    const statusLabels = {
+      queued: 'в очереди',
+      running: 'выполняется',
+      completed: 'завершено',
+      failed: 'ошибка'
     };
 
-    form.addEventListener('submit', (event) => {
-      event.preventDefault();
+    const setMessage = (text, isError = false) => {
+      message.style.display = 'block';
+      message.classList.toggle('error', isError);
+      message.textContent = text;
+    };
+
+    const clearMessage = () => {
       message.style.display = 'none';
-      progressContainer.style.display = 'none';
-      setProgress(0, '');
+      message.classList.remove('error');
+      message.textContent = '';
+    };
+
+    const setProgress = (processed, total, status) => {
+      progressCard.style.display = 'block';
+      const statusLabel = statusLabels[status] || status;
+
+      if (total > 0) {
+        progressBar.value = Math.round((processed / total) * 100);
+        progressText.textContent = `Статус: ${statusLabel}. Обработано ${processed} из ${total} текстов.`;
+      } else {
+        progressBar.value = 0;
+        progressText.textContent = `Статус: ${statusLabel}. Подготавливаем анализ.`;
+      }
+    };
+
+    const stopPolling = () => {
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+    };
+
+    const downloadResult = async (jobId, token) => {
+      const response = await fetch(`${baseUrl}/upload/result/${jobId}`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(errorText || `HTTP ${response.status}`);
+      }
+
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'results.csv';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    };
+
+    const startPolling = (jobId, token) => {
+      stopPolling();
+
+      pollTimer = setInterval(async () => {
+        try {
+          const response = await fetch(`${baseUrl}/upload/status/${jobId}`, {
+            headers: {
+              'Authorization': `Bearer ${token}`
+            }
+          });
+
+          const statusData = await response.json();
+          if (!response.ok) {
+            throw new Error(statusData.detail || `HTTP ${response.status}`);
+          }
+
+          setProgress(statusData.processed, statusData.total, statusData.status);
+
+          if (statusData.status === 'completed') {
+            stopPolling();
+            progressBar.value = 100;
+            progressText.textContent = `Статус: завершено. Обработано ${statusData.total} из ${statusData.total} текстов.`;
+            await downloadResult(jobId, token);
+            submitButton.disabled = false;
+            setMessage('Файл results.csv готов и скачан.');
+          } else if (statusData.status === 'failed') {
+            stopPolling();
+            submitButton.disabled = false;
+            setMessage(`Ошибка анализа: ${statusData.error || 'неизвестная ошибка'}`, true);
+          }
+        } catch (error) {
+          stopPolling();
+          submitButton.disabled = false;
+          setMessage(`Ошибка проверки статуса: ${error.message}`, true);
+        }
+      }, 1000);
+    };
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      clearMessage();
+      stopPolling();
+      progressCard.style.display = 'none';
+      progressBar.value = 0;
+      progressText.textContent = '';
 
       const token = localStorage.getItem('accessToken');
       if (!token) {
-        message.style.display = 'block';
-        message.textContent = 'Сначала выполните вход на странице login.html.';
+        setMessage('Сначала выполните вход на странице входа.', true);
         return;
       }
 
       const fileInput = document.getElementById('file');
       if (!fileInput.files.length) {
-        message.style.display = 'block';
-        message.textContent = 'Выберите файл CSV.';
+        setMessage('Выберите файл CSV.', true);
         return;
       }
+
+      submitButton.disabled = true;
+      setProgress(0, 0, 'queued');
 
       const formData = new FormData();
       formData.append('file', fileInput.files[0]);
 
-      const xhr = new XMLHttpRequest();
-      xhr.open('POST', `${baseUrl}/upload`, true);
-      xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+      try {
+        const response = await fetch(`${baseUrl}/upload`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${token}`
+          },
+          body: formData
+        });
 
-      xhr.upload.addEventListener('progress', (event) => {
-        if (event.lengthComputable) {
-          const percent = Math.round((event.loaded / event.total) * 100);
-          progressContainer.style.display = 'block';
-          setProgress(percent, `Загружено ${percent}%`);
+        const data = await response.json();
+        if (!response.ok) {
+          submitButton.disabled = false;
+          throw new Error(data.detail || `HTTP ${response.status}`);
         }
-      });
 
-      xhr.onreadystatechange = async () => {
-        if (xhr.readyState === XMLHttpRequest.DONE) {
-          if (xhr.status >= 200 && xhr.status < 300) {
-            const blob = new Blob([xhr.response], { type: 'application/octet-stream' });
-            const url = URL.createObjectURL(blob);
-            const link = document.createElement('a');
-            link.href = url;
-            link.download = 'results.csv';
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
-            URL.revokeObjectURL(url);
-            message.style.display = 'block';
-            message.textContent = 'Файл results.csv скачан.';
-          } else {
-            let errorText = xhr.statusText;
-            if (xhr.response instanceof Blob) {
-              try {
-                errorText = await xhr.response.text();
-              } catch (e) {
-                // keep default statusText
-              }
-            }
-            message.style.display = 'block';
-            message.textContent = `Ошибка: ${xhr.status} ${errorText}`;
-          }
-        }
-      };
-
-      xhr.responseType = 'blob';
-      xhr.send(formData);
+        startPolling(data.job_id, token);
+      } catch (error) {
+        submitButton.disabled = false;
+        setMessage(`Ошибка: ${error.message}`, true);
+      }
     });
   </script>
 </body>

@@ -37,6 +37,25 @@ if "HF_HOME" not in os.environ:
     os.environ["HF_HOME"] = str(Path(__file__).resolve().parent / ".hf")
 
 
+MORPH = pymorphy3.MorphAnalyzer()
+
+POS_LABELS = {
+    "NOUN": "noun",
+    "VERB": "verb",
+    "INFN": "infinitive",
+    "ADJF": "adjective_full",
+    "ADJS": "adjective_short",
+    "COMP": "comparative",
+    "ADVB": "adverb",
+    "NPRO": "pronoun",
+    "NUMR": "numeral",
+    "PREP": "preposition",
+    "CONJ": "conjunction",
+    "PRCL": "particle",
+    "INTJ": "interjection",
+}
+
+
 
 
 
@@ -72,9 +91,64 @@ def clean_text(text: str) -> str:
     return text
 
 def create_linguistic_report(text: str) -> dict:
+    tokens = text.split()
+    russian_words = re.findall(r"\b[А-Яа-яЁё]+\b", text)
+    unique_words = {word.lower() for word in russian_words}
+    sentences = [sentence.strip() for sentence in re.split(r"[.!?]+", text) if sentence.strip()]
+    sentence_lengths = [len(sentence.split()) for sentence in sentences]
+
+    punctuation_counts = {
+        "commas": text.count(","),
+        "periods": text.count("."),
+        "exclamation_marks": text.count("!"),
+        "question_marks": text.count("?"),
+        "colons": text.count(":"),
+        "semicolons": text.count(";"),
+        "dashes": text.count("-") + text.count("—"),
+        "quotes": text.count('"') + text.count("«") + text.count("»"),
+    }
+
+    pos_counter = Counter()
+    lemma_counter = Counter()
+    for word in russian_words:
+        parse = MORPH.parse(word.lower())[0]
+        lemma_counter[parse.normal_form] += 1
+
+        pos = parse.tag.POS
+        if pos:
+            pos_counter[POS_LABELS.get(pos, pos.lower())] += 1
+
+    average_word_length = (
+        round(sum(len(word) for word in russian_words) / len(russian_words), 2)
+        if russian_words else 0
+    )
+    average_sentence_length = (
+        round(sum(sentence_lengths) / len(sentence_lengths), 2)
+        if sentence_lengths else 0
+    )
+    lexical_diversity = (
+        round(len(unique_words) / len(russian_words), 3)
+        if russian_words else 0
+    )
+
     return {
-        "word_count": len(text.split()),
-        "length": len(text),
+        "character_count": len(text),
+        "character_count_no_spaces": len(re.sub(r"\s+", "", text)),
+        "word_count": len(tokens),
+        "russian_word_count": len(russian_words),
+        "unique_word_count": len(unique_words),
+        "sentence_count": len(sentences),
+        "paragraph_count": len([part for part in text.splitlines() if part.strip()]) or 1,
+        "average_word_length": average_word_length,
+        "average_sentence_length": average_sentence_length,
+        "lexical_diversity": lexical_diversity,
+        "long_word_count": sum(1 for word in russian_words if len(word) >= 7),
+        "punctuation": punctuation_counts,
+        "part_of_speech_distribution": dict(pos_counter),
+        "top_words": [
+            {"word": lemma, "count": count}
+            for lemma, count in lemma_counter.most_common(10)
+        ],
     }
 
 
@@ -122,13 +196,13 @@ def is_text_analyzable(text: str) -> bool:
     return True
     
 def is_text_meaningful(text: str) -> bool:
-    morph = pymorphy3.MorphAnalyzer()
+    
 
     words = re.findall(r"\b[А-Яа-яЁё]+\b", text.lower())
 
     pos_tags = []
     for word in words:
-        parse = morph.parse(word)[0]
+        parse = MORPH.parse(word)[0]
         pos = parse.tag.POS
         if pos:
             pos_tags.append(pos)

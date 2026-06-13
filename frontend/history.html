@@ -62,6 +62,7 @@
       gap: 10px;
       margin: 8px 0 0;
       width: 100%;
+      box-sizing: border-box;
       padding: 12px;
       border: 1px solid #cbd5e1;
       border-radius: 12px;
@@ -79,8 +80,13 @@
       margin: 0;
       transform: scale(1.1);
     }
-    button {
+    .actions {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
       margin-top: 24px;
+    }
+    button {
       padding: 14px 18px;
       border: none;
       border-radius: 12px;
@@ -91,6 +97,12 @@
     }
     button:hover {
       background: #3b82f6;
+    }
+    .secondary-button {
+      background: #0f172a;
+    }
+    .secondary-button:hover {
+      background: #1e293b;
     }
     .message {
       margin-top: 18px;
@@ -129,7 +141,8 @@
     <h1>История анализов</h1>
     <form id="historyForm">
       <label for="substring">Искать в тексте</label>
-      <input id="substring" name="substring" type="text" placeholder="Часть текста" />
+      <input id="substring" name="substring" type="text" placeholder="Введите часть текста" />
+
       <label>Уровни</label>
       <div class="checkbox-group">
         <label><input type="checkbox" name="levels" value="A1"> A1</label>
@@ -139,32 +152,53 @@
         <label><input type="checkbox" name="levels" value="C1"> C1</label>
         <label><input type="checkbox" name="levels" value="C2"> C2</label>
       </div>
+
       <label for="sort_by">Сортировка</label>
       <select id="sort_by" name="sort_by">
         <option value="analyzed_at_desc">Сначала новые</option>
         <option value="analyzed_at_asc">Сначала старые</option>
-        <option value="text_asc">Текст A→Z</option>
-        <option value="text_desc">Текст Z→A</option>
-        <option value="level_asc">Уровень: просто → сложно</option>
-        <option value="level_desc">Уровень: сложно → просто</option>
+        <option value="text_asc">Текст A→Я</option>
+        <option value="text_desc">Текст Я→A</option>
+        <option value="level_asc">Уровень: A1→C2</option>
+        <option value="level_desc">Уровень: C2→A1</option>
       </select>
-      <button type="submit">Показать историю</button>
+
+      <div class="actions">
+        <button type="submit">Показать историю</button>
+        <button id="downloadCsvButton" type="button" class="secondary-button">Скачать CSV</button>
+      </div>
     </form>
+
     <div id="message" class="message" style="display:none"></div>
     <div id="historyResult"></div>
   </main>
+
   <script>
     const baseUrl = window.location.origin;
     const form = document.getElementById('historyForm');
     const message = document.getElementById('message');
     const historyResult = document.getElementById('historyResult');
+    const downloadCsvButton = document.getElementById('downloadCsvButton');
+
+    const getPayload = () => {
+      const substring = form.substring.value.trim() || null;
+      const selectedLevels = Array.from(form.querySelectorAll('input[name="levels"]:checked')).map((input) => input.value);
+      const sort_by = form.sort_by.value;
+
+      return {
+        substring,
+        levels: selectedLevels.length ? selectedLevels : null,
+        sort_by
+      };
+    };
+
     const renderTable = (rows) => {
       if (!rows.length) {
         historyResult.innerHTML = '<p>Нет записей.</p>';
         return;
       }
 
-      const rowsHtml = rows.map(row => `
+      const rowsHtml = rows.map((row) => `
         <tr>
           <td>${row.text.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</td>
           <td>${row.level}</td>
@@ -190,19 +224,9 @@
       const token = localStorage.getItem('accessToken');
       if (!token) {
         message.style.display = 'block';
-        message.textContent = 'Сначала выполните вход на странице login.html.';
+        message.textContent = 'Сначала выполните вход на странице входа.';
         return;
       }
-
-      const substring = form.substring.value.trim() || null;
-      const selectedLevels = Array.from(form.querySelectorAll('input[name="levels"]:checked')).map(input => input.value);
-      const sort_by = form.sort_by.value;
-
-      const payload = {
-        substring,
-        levels: selectedLevels.length ? selectedLevels : null,
-        sort_by
-      };
 
       try {
         const response = await fetch(`${baseUrl}/history`, {
@@ -211,8 +235,9 @@
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${token}`
           },
-          body: JSON.stringify(payload)
+          body: JSON.stringify(getPayload())
         });
+
         const result = await response.json();
         if (result.history) {
           renderTable(result.history);
@@ -224,6 +249,46 @@
       } catch (error) {
         message.style.display = 'block';
         message.textContent = `Сетевая ошибка: ${error.message}`;
+      }
+    });
+
+    downloadCsvButton.addEventListener('click', async () => {
+      message.style.display = 'none';
+
+      const token = localStorage.getItem('accessToken');
+      if (!token) {
+        message.style.display = 'block';
+        message.textContent = 'Сначала выполните вход на странице входа.';
+        return;
+      }
+
+      try {
+        const response = await fetch(`${baseUrl}/history/export`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify(getPayload())
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(errorText || `HTTP ${response.status}`);
+        }
+
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = 'history.csv';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+      } catch (error) {
+        message.style.display = 'block';
+        message.textContent = `Ошибка скачивания: ${error.message}`;
       }
     });
   </script>

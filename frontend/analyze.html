@@ -5,6 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Анализ текста</title>
   <style>
+    * {
+      box-sizing: border-box;
+    }
     body {
       margin: 0;
       font-family: Inter, system-ui, sans-serif;
@@ -12,7 +15,7 @@
       color: #1f2937;
     }
     .container {
-      max-width: 760px;
+      max-width: 900px;
       margin: 48px auto;
       padding: 24px;
       background: #ffffff;
@@ -30,7 +33,6 @@
     }
     textarea {
       width: 100%;
-      box-sizing: border-box;
       margin-top: 8px;
       min-height: 180px;
       padding: 14px;
@@ -63,6 +65,76 @@
       color: #0f172a;
       white-space: pre-wrap;
     }
+    .message.error {
+      background: #fef2f2;
+      border-color: #fecaca;
+      color: #991b1b;
+    }
+    .warning {
+      margin-top: 18px;
+      padding: 14px 16px;
+      border-radius: 12px;
+      background: #fff7ed;
+      border: 1px solid #fdba74;
+      color: #9a3412;
+    }
+    .result {
+      margin-top: 24px;
+      display: none;
+      gap: 18px;
+    }
+    .level-card,
+    .section-card {
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 16px;
+      padding: 20px;
+    }
+    .level-label {
+      margin: 0;
+      font-size: 0.9rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #64748b;
+    }
+    .level-value {
+      margin: 10px 0 0;
+      font-size: 2.5rem;
+      font-weight: 700;
+      color: #0f172a;
+    }
+    .section-title {
+      margin: 0 0 14px;
+      font-size: 1.1rem;
+      color: #0f172a;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: #ffffff;
+      border-radius: 12px;
+      overflow: hidden;
+    }
+    th, td {
+      padding: 12px 14px;
+      border-bottom: 1px solid #e2e8f0;
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      width: 48%;
+      background: #eff6ff;
+      color: #1e3a8a;
+      font-weight: 600;
+    }
+    tr:last-child th,
+    tr:last-child td {
+      border-bottom: none;
+    }
+    .empty-text {
+      margin: 0;
+      color: #64748b;
+    }
     .nav {
       margin-bottom: 24px;
     }
@@ -81,21 +153,151 @@
       <textarea id="text" name="text" required></textarea>
       <button type="submit">Анализировать</button>
     </form>
+
     <div id="message" class="message" style="display:none"></div>
+
+    <div id="result" class="result">
+      <section class="level-card">
+        <p class="level-label">Уровень по шкале CEFR</p>
+        <p id="levelValue" class="level-value">-</p>
+      </section>
+
+      <div id="warning" class="warning" style="display:none"></div>
+
+      <section class="section-card">
+        <h2 class="section-title">Основные характеристики</h2>
+        <table>
+          <tbody id="summaryTableBody"></tbody>
+        </table>
+      </section>
+
+      <section class="section-card">
+        <h2 class="section-title">Пунктуация</h2>
+        <table>
+          <tbody id="punctuationTableBody"></tbody>
+        </table>
+      </section>
+
+      <section class="section-card">
+        <h2 class="section-title">Части речи</h2>
+        <table>
+          <tbody id="posTableBody"></tbody>
+        </table>
+      </section>
+
+      <section class="section-card">
+        <h2 class="section-title">Частотные слова</h2>
+        <table>
+          <tbody id="topWordsTableBody"></tbody>
+        </table>
+      </section>
+    </div>
   </main>
+
   <script>
     const baseUrl = window.location.origin;
     const form = document.getElementById('analyzeForm');
     const message = document.getElementById('message');
+    const resultBlock = document.getElementById('result');
+    const warning = document.getElementById('warning');
+    const levelValue = document.getElementById('levelValue');
+    const summaryTableBody = document.getElementById('summaryTableBody');
+    const punctuationTableBody = document.getElementById('punctuationTableBody');
+    const posTableBody = document.getElementById('posTableBody');
+    const topWordsTableBody = document.getElementById('topWordsTableBody');
+
+    const labels = {
+      character_count: 'Символов',
+      character_count_no_spaces: 'Символов без пробелов',
+      word_count: 'Всего слов',
+      russian_word_count: 'Русских слов',
+      unique_word_count: 'Уникальных слов',
+      sentence_count: 'Предложений',
+      paragraph_count: 'Абзацев',
+      average_word_length: 'Средняя длина слова',
+      average_sentence_length: 'Средняя длина предложения',
+      lexical_diversity: 'Лексическое разнообразие',
+      long_word_count: 'Длинных слов (7+)',
+      commas: 'Запятых',
+      periods: 'Точек',
+      exclamation_marks: 'Восклицательных знаков',
+      question_marks: 'Вопросительных знаков',
+      colons: 'Двоеточий',
+      semicolons: 'Точек с запятой',
+      dashes: 'Тире и дефисов',
+      quotes: 'Кавычек',
+      noun: 'Существительные',
+      verb: 'Глаголы',
+      infinitive: 'Инфинитивы',
+      adjective_full: 'Полные прилагательные',
+      adjective_short: 'Краткие прилагательные',
+      comparative: 'Сравнительная степень',
+      adverb: 'Наречия',
+      pronoun: 'Местоимения',
+      numeral: 'Числительные',
+      preposition: 'Предлоги',
+      conjunction: 'Союзы',
+      particle: 'Частицы',
+      interjection: 'Междометия'
+    };
+
+    const escapeHtml = (value) => String(value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+
+    const renderRows = (target, rows, emptyText) => {
+      if (!rows.length) {
+        target.innerHTML = `<tr><td colspan="2"><p class="empty-text">${escapeHtml(emptyText)}</p></td></tr>`;
+        return;
+      }
+
+      target.innerHTML = rows.map(([label, value]) => `
+        <tr>
+          <th>${escapeHtml(label)}</th>
+          <td>${escapeHtml(value)}</td>
+        </tr>
+      `).join('');
+    };
+
+    const renderTopWords = (words) => {
+      if (!words.length) {
+        topWordsTableBody.innerHTML = '<tr><td colspan="2"><p class="empty-text">Нет данных.</p></td></tr>';
+        return;
+      }
+
+      topWordsTableBody.innerHTML = words.map((item) => `
+        <tr>
+          <th>${escapeHtml(item.word)}</th>
+          <td>${escapeHtml(item.count)}</td>
+        </tr>
+      `).join('');
+    };
+
+    const resetResult = () => {
+      resultBlock.style.display = 'none';
+      warning.style.display = 'none';
+      warning.textContent = '';
+      levelValue.textContent = '-';
+      summaryTableBody.innerHTML = '';
+      punctuationTableBody.innerHTML = '';
+      posTableBody.innerHTML = '';
+      topWordsTableBody.innerHTML = '';
+    };
 
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
       message.style.display = 'none';
+      message.classList.remove('error');
+      resetResult();
 
       const token = localStorage.getItem('accessToken');
       if (!token) {
         message.style.display = 'block';
-        message.textContent = 'Сначала выполните вход на странице login.html.';
+        message.classList.add('error');
+        message.textContent = 'Сначала выполните вход на странице входа.';
         return;
       }
 
@@ -110,11 +312,55 @@
           },
           body: JSON.stringify(payload)
         });
-        const result = await response.json();
-        message.style.display = 'block';
-        message.textContent = JSON.stringify(result, null, 2);
+
+        const data = await response.json();
+        if (!response.ok || data.error) {
+          message.style.display = 'block';
+          message.classList.add('error');
+          message.textContent = data.error || `HTTP ${response.status}`;
+          return;
+        }
+
+        const report = data.linguistic_report || {};
+        const summaryKeys = [
+          'character_count',
+          'character_count_no_spaces',
+          'word_count',
+          'russian_word_count',
+          'unique_word_count',
+          'sentence_count',
+          'paragraph_count',
+          'average_word_length',
+          'average_sentence_length',
+          'lexical_diversity',
+          'long_word_count'
+        ];
+
+        const summaryRows = summaryKeys
+          .filter((key) => Object.prototype.hasOwnProperty.call(report, key))
+          .map((key) => [labels[key] || key, report[key]]);
+
+        const punctuationRows = Object.entries(report.punctuation || {})
+          .map(([key, value]) => [labels[key] || key, value]);
+
+        const posRows = Object.entries(report.part_of_speech_distribution || {})
+          .map(([key, value]) => [labels[key] || key, value]);
+
+        levelValue.textContent = data.level || '-';
+        renderRows(summaryTableBody, summaryRows, 'Отчет еще не сформирован.');
+        renderRows(punctuationTableBody, punctuationRows, 'Данных о пунктуации нет.');
+        renderRows(posTableBody, posRows, 'Данных о частях речи нет.');
+        renderTopWords(report.top_words || []);
+
+        if (data.warning) {
+          warning.style.display = 'block';
+          warning.textContent = data.warning;
+        }
+
+        resultBlock.style.display = 'grid';
       } catch (error) {
         message.style.display = 'block';
+        message.classList.add('error');
         message.textContent = `Сетевая ошибка: ${error.message}`;
       }
     });
