@@ -2,22 +2,25 @@ import re
 from collections import Counter
 import pymorphy3
 
-
-
 import os
 from pathlib import Path
 
 import re
-import pandas as pd
-from random import choice
 from datetime import datetime
 
-from fastapi import FastAPI, File, UploadFile, Depends
-from fastapi.responses import FileResponse
+from fastapi import Depends
 
 from sqlalchemy.orm import Session
 
+
+
 import torch
+
+
+if "HF_HOME" not in os.environ:
+    os.environ["HF_HOME"] = str(Path(__file__).resolve().parent / ".hf")
+
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
 from datetime import datetime, timedelta
 
@@ -34,7 +37,6 @@ if "HF_HOME" not in os.environ:
     os.environ["HF_HOME"] = str(Path(__file__).resolve().parent / ".hf")
 
 
-from db import get_db
 
 
 
@@ -92,16 +94,20 @@ def level_to_cefr(level: int) -> str:
 def is_text_analyzable(text: str) -> bool:
     letters_and_digits = re.findall(r"[А-Яа-яЁёA-Za-z0-9]", text)
     special_symbols = re.findall(r"[^А-Яа-яЁёA-Za-z0-9\s]", text)
+    print(0)
 
     if letters_and_digits and len(special_symbols) / len(letters_and_digits) > 0.7:
+        print(1)
         return False
 
     english_words = re.findall(r"\b[A-Za-z]+\b", text)
 
     if len(english_words) / len(text.split()) > 0.3:
+        print(2)
         return False
     
     if re.search(r"(.)\1{7,}", text):
+        print(3)
         return False
 
     random_latin_tokens = [
@@ -110,7 +116,10 @@ def is_text_analyzable(text: str) -> bool:
     ]
 
     if len(random_latin_tokens) >= 2:
+        print(4)
         return False
+    
+    return True
     
 def is_text_meaningful(text: str) -> bool:
     morph = pymorphy3.MorphAnalyzer()
@@ -148,6 +157,50 @@ def is_text_meaningful(text: str) -> bool:
 
     return True
 
+
+class TextClassifierService:
+    def __init__(self, checkpoint_path: str):
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+
+        self.base_model_name = checkpoint["base_model_name"]
+        self.num_labels = checkpoint["num_labels"]
+        self.id2label = checkpoint["id2label"]
+        self.label2id = checkpoint["label2id"]
+        self.max_length = checkpoint.get("max_length", 512)
+
+        self.tokenizer = AutoTokenizer.from_pretrained(self.base_model_name)
+
+        self.model = AutoModelForSequenceClassification.from_pretrained(
+            self.base_model_name,
+            num_labels=self.num_labels,
+            id2label=self.id2label,
+            label2id=self.label2id
+        )
+
+        self.model.load_state_dict(checkpoint["model_state_dict"])
+        self.model.to(self.device)
+        self.model.eval()
+
+    def predict(self, text: str) -> dict:
+        inputs = self.tokenizer(
+            text,
+            return_tensors="pt",
+            truncation=True,
+            padding=True,
+            max_length=self.max_length
+        )
+
+        inputs = {k: v.to(self.device) for k, v in inputs.items()}
+
+        with torch.inference_mode():
+            outputs = self.model(**inputs)
+            probs = torch.softmax(outputs.logits, dim=-1)
+            pred_id = torch.argmax(probs, dim=-1).item()
+
+        return self.id2label[pred_id]
+    
 
 def validate_password_complexity(password: str):
     if len(password) < 8:

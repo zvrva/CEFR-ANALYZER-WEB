@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Анализ текста</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: Inter, system-ui, sans-serif;
+      background: #eef6ff;
+      color: #1f2937;
+    }
+    .container {
+      max-width: 760px;
+      margin: 48px auto;
+      padding: 24px;
+      background: #ffffff;
+      border: 1px solid #d1d5db;
+      border-radius: 16px;
+    }
+    h1 {
+      margin-top: 0;
+      color: #0f172a;
+    }
+    label {
+      display: block;
+      margin-top: 18px;
+      font-weight: 600;
+    }
+    textarea {
+      width: 100%;
+      box-sizing: border-box;
+      margin-top: 8px;
+      min-height: 180px;
+      padding: 14px;
+      border: 1px solid #cbd5e1;
+      border-radius: 12px;
+      background: #f8fafc;
+      color: #0f172a;
+      font-size: 1rem;
+      resize: vertical;
+    }
+    button {
+      margin-top: 24px;
+      padding: 14px 18px;
+      border: none;
+      border-radius: 12px;
+      background: #60a5fa;
+      color: #ffffff;
+      font-size: 1rem;
+      cursor: pointer;
+    }
+    button:hover {
+      background: #3b82f6;
+    }
+    .message {
+      margin-top: 18px;
+      padding: 16px;
+      border-radius: 12px;
+      background: #f1f5f9;
+      border: 1px solid #e2e8f0;
+      color: #0f172a;
+      white-space: pre-wrap;
+    }
+    .nav {
+      margin-bottom: 24px;
+    }
+    .nav a {
+      color: #2563eb;
+      text-decoration: none;
+    }
+  </style>
+</head>
+<body>
+  <main class="container">
+    <div class="nav"><a href="/">← Главная</a></div>
+    <h1>Анализ текста</h1>
+    <form id="analyzeForm">
+      <label for="text">Текст для анализа</label>
+      <textarea id="text" name="text" required></textarea>
+      <button type="submit">Анализировать</button>
+    </form>
+    <div id="message" class="message" style="display:none"></div>
+  </main>
+  <script>
+    const baseUrl = window.location.origin;
+    const form = document.getElementById('analyzeForm');
+    const message = document.getElementById('message');
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      message.style.display = 'none';
+
+      const token = localStorage.getItem('accessToken');
+      if (!token) {
+        message.style.display = 'block';
+        message.textContent = 'Сначала выполните вход на странице login.html.';
+        return;
+      }
+
+      const payload = { text: form.text.value.trim() };
+
+      try {
+        const response = await fetch(`${baseUrl}/analyze`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify(payload)
+        });
+        const result = await response.json();
+        message.style.display = 'block';
+        message.textContent = JSON.stringify(result, null, 2);
+      } catch (error) {
+        message.style.display = 'block';
+        message.textContent = `Сетевая ошибка: ${error.message}`;
+      }
+    });
+  </script>
+</body>
+</html>

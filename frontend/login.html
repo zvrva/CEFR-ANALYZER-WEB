@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Вход</title>
+  <style>
+    *, *::before, *::after {
+      box-sizing: border-box;
+    }
+    body {
+      margin: 0;
+      font-family: Inter, system-ui, sans-serif;
+      background: #eef6ff;
+      color: #1f2937;
+    }
+    .container {
+      max-width: 620px;
+      margin: 48px auto;
+      padding: 24px;
+      background: #ffffff;
+      border: 1px solid #d1d5db;
+      border-radius: 16px;
+    }
+    h1 {
+      margin-top: 0;
+      color: #0f172a;
+    }
+    label {
+      display: block;
+      margin-top: 18px;
+      font-weight: 600;
+    }
+    input {
+      width: 100%;
+      margin-top: 8px;
+      padding: 12px;
+      border: 1px solid #cbd5e1;
+      border-radius: 12px;
+      background: #f8fafc;
+      color: #0f172a;
+      font-size: 1rem;
+    }
+    button {
+      margin-top: 24px;
+      padding: 14px 18px;
+      border: none;
+      border-radius: 12px;
+      background: #60a5fa;
+      color: #ffffff;
+      font-size: 1rem;
+      cursor: pointer;
+    }
+    button:hover {
+      background: #3b82f6;
+    }
+    .message {
+      margin-top: 18px;
+      padding: 16px;
+      border-radius: 12px;
+      background: #f1f5f9;
+      border: 1px solid #e2e8f0;
+      color: #0f172a;
+      white-space: pre-wrap;
+    }
+    .nav {
+      margin-bottom: 24px;
+    }
+    .nav a {
+      color: #2563eb;
+      text-decoration: none;
+    }
+  </style>
+</head>
+<body>
+  <main class="container">
+    <div class="nav"><a href="/">← Главная</a></div>
+    <h1>Вход</h1>
+    <form id="loginForm">
+      <label for="email">Email</label>
+      <input id="email" name="email" type="email" required />
+      <label for="password">Пароль</label>
+      <input id="password" name="password" type="password" required />
+      <button type="submit">Войти</button>
+    </form>
+    <div id="message" class="message" style="display:none"></div>
+  </main>
+  <script>
+    const baseUrl = window.location.origin;
+    const form = document.getElementById('loginForm');
+    const message = document.getElementById('message');
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      message.style.display = 'none';
+
+      const formData = new URLSearchParams();
+      formData.append('username', form.email.value.trim());
+      formData.append('password', form.password.value);
+      formData.append('grant_type', 'password');
+
+      try {
+        const response = await fetch(`${baseUrl}/login`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded'
+          },
+          body: formData
+        });
+        const result = await response.json();
+        if (result.error) {
+          message.style.display = 'block';
+          message.textContent = `Ошибка: ${result.error}`;
+          localStorage.removeItem('accessToken');
+        } else if (result.access_token) {
+          localStorage.setItem('accessToken', result.access_token);
+          window.location.href = '/analyze';
+        } else {
+          message.style.display = 'block';
+          message.textContent = JSON.stringify(result, null, 2);
+        }
+      } catch (error) {
+        message.style.display = 'block';
+        message.textContent = `Сетевая ошибка: ${error.message}`;
+      }
+    });
+  </script>
+</body>
+</html>

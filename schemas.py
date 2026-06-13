@@ -10,6 +10,8 @@ class HistoryRequest(BaseModel):
         "analyzed_at_desc",
         "text_asc",
         "text_desc",
+        "level_asc",
+        "level_desc",
     ] = "analyzed_at_desc"
 
 

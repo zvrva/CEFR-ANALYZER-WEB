@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Загрузка CSV</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: Inter, system-ui, sans-serif;
+      background: #eef6ff;
+      color: #1f2937;
+    }
+    .container {
+      max-width: 620px;
+      margin: 48px auto;
+      padding: 24px;
+      background: #ffffff;
+      border: 1px solid #d1d5db;
+      border-radius: 16px;
+    }
+    h1 {
+      margin-top: 0;
+      color: #0f172a;
+    }
+    label {
+      display: block;
+      margin-top: 18px;
+      font-weight: 600;
+    }
+    input[type=file] {
+      width: 100%;
+      margin-top: 12px;
+    }
+    button {
+      margin-top: 24px;
+      padding: 14px 18px;
+      border: none;
+      border-radius: 12px;
+      background: #60a5fa;
+      color: #ffffff;
+      font-size: 1rem;
+      cursor: pointer;
+    }
+    button:hover {
+      background: #3b82f6;
+    }
+    .message {
+      margin-top: 18px;
+      padding: 16px;
+      border-radius: 12px;
+      background: #f1f5f9;
+      border: 1px solid #e2e8f0;
+      color: #0f172a;
+      white-space: pre-wrap;
+    }
+    .nav {
+      margin-bottom: 24px;
+    }
+    .nav a {
+      color: #2563eb;
+      text-decoration: none;
+    }
+  </style>
+</head>
+<body>
+  <main class="container">
+    <div class="nav"><a href="/">← Главная</a></div>
+    <h1>Загрузка CSV</h1>
+    <form id="uploadForm">
+      <label for="file">Файл CSV</label>
+      <input id="file" name="file" type="file" accept=".csv" required />
+      <button type="submit">Загрузить</button>
+    </form>
+    <div id="progressContainer" style="display:none; margin-top:18px;">
+      <label for="uploadProgress">Загрузка CSV</label>
+      <progress id="uploadProgress" value="0" max="100" style="width:100%; height:18px; border-radius:10px;"></progress>
+      <div id="progressText" style="margin-top:8px; color:#475569; font-size:0.95rem;"></div>
+    </div>
+    <div id="message" class="message" style="display:none"></div>
+  </main>
+  <script>
+    const baseUrl = window.location.origin;
+    const form = document.getElementById('uploadForm');
+    const message = document.getElementById('message');
+    const progressContainer = document.getElementById('progressContainer');
+    const progressBar = document.getElementById('uploadProgress');
+    const progressText = document.getElementById('progressText');
+
+    const setProgress = (percent, text) => {
+      progressBar.value = percent;
+      progressText.textContent = text;
+    };
+
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      message.style.display = 'none';
+      progressContainer.style.display = 'none';
+      setProgress(0, '');
+
+      const token = localStorage.getItem('accessToken');
+      if (!token) {
+        message.style.display = 'block';
+        message.textContent = 'Сначала выполните вход на странице login.html.';
+        return;
+      }
+
+      const fileInput = document.getElementById('file');
+      if (!fileInput.files.length) {
+        message.style.display = 'block';
+        message.textContent = 'Выберите файл CSV.';
+        return;
+      }
+
+      const formData = new FormData();
+      formData.append('file', fileInput.files[0]);
+
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', `${baseUrl}/upload`, true);
+      xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+
+      xhr.upload.addEventListener('progress', (event) => {
+        if (event.lengthComputable) {
+          const percent = Math.round((event.loaded / event.total) * 100);
+          progressContainer.style.display = 'block';
+          setProgress(percent, `Загружено ${percent}%`);
+        }
+      });
+
+      xhr.onreadystatechange = async () => {
+        if (xhr.readyState === XMLHttpRequest.DONE) {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            const blob = new Blob([xhr.response], { type: 'application/octet-stream' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = 'results.csv';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(url);
+            message.style.display = 'block';
+            message.textContent = 'Файл results.csv скачан.';
+          } else {
+            let errorText = xhr.statusText;
+            if (xhr.response instanceof Blob) {
+              try {
+                errorText = await xhr.response.text();
+              } catch (e) {
+                // keep default statusText
+              }
+            }
+            message.style.display = 'block';
+            message.textContent = `Ошибка: ${xhr.status} ${errorText}`;
+          }
+        }
+      };
+
+      xhr.responseType = 'blob';
+      xhr.send(formData);
+    });
+  </script>
+</body>
+</html>

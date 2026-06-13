@@ -7,85 +7,39 @@ from random import choice
 from datetime import datetime
 
 from fastapi import FastAPI, File, UploadFile, Depends
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
 from sqlalchemy.orm import Session
 
-import torch
 
-from datetime import datetime, timedelta
+from datetime import datetime
 
-import bcrypt
-from jose import JWTError, jwt
-
-from fastapi import Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer
-
-from models import Users
 from db import get_db
+
+from fastapi.security import OAuth2PasswordRequestForm
 
 if "HF_HOME" not in os.environ:
     os.environ["HF_HOME"] = str(Path(__file__).resolve().parent / ".hf")
 
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
 from db import get_db
-from models import LevelsCRUD, Texts, Levels, ErrorsCRUD, TextsCRUD, UsersCRUD
-from schemas import HistoryRequest, RegisterRequest, LoginRequest
-from utils import clean_russian_words_only, clean_text, create_linguistic_report, level_to_cefr, is_text_meaningful, is_text_analyzable, validate_password_complexity, get_current_user, create_access_token, verify_password, hash_password
 
+from schemas import HistoryRequest, RegisterRequest, LoginRequest
+from utils import clean_russian_words_only, clean_text, create_linguistic_report, level_to_cefr, is_text_meaningful, is_text_analyzable, validate_password_complexity, get_current_user, create_access_token, verify_password, hash_password, TextClassifierService
+from models import LevelsCRUD, Texts, Levels, ErrorsCRUD, TextsCRUD, UsersCRUD, Users
 
 app = FastAPI()
+app.mount("/frontend", StaticFiles(directory=str(Path(__file__).resolve().parent / "frontend")), name="frontend")
 
 
-class TextClassifierService:
-    def __init__(self, checkpoint_path: str):
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        checkpoint = torch.load(checkpoint_path, map_location=self.device)
-
-        self.base_model_name = checkpoint["base_model_name"]
-        self.num_labels = checkpoint["num_labels"]
-        self.id2label = checkpoint["id2label"]
-        self.label2id = checkpoint["label2id"]
-        self.max_length = checkpoint.get("max_length", 512)
-
-        self.tokenizer = AutoTokenizer.from_pretrained(self.base_model_name)
-
-        self.model = AutoModelForSequenceClassification.from_pretrained(
-            self.base_model_name,
-            num_labels=self.num_labels,
-            id2label=self.id2label,
-            label2id=self.label2id
-        )
-
-        self.model.load_state_dict(checkpoint["model_state_dict"])
-        self.model.to(self.device)
-        self.model.eval()
-
-    def predict(self, text: str) -> dict:
-        inputs = self.tokenizer(
-            text,
-            return_tensors="pt",
-            truncation=True,
-            padding=True,
-            max_length=self.max_length
-        )
-
-        inputs = {k: v.to(self.device) for k, v in inputs.items()}
-
-        with torch.inference_mode():
-            outputs = self.model(**inputs)
-            probs = torch.softmax(outputs.logits, dim=-1)
-            pred_id = torch.argmax(probs, dim=-1).item()
-
-        return self.id2label[pred_id]
 
 classifier = None
 @app.on_event("startup")
 def load_model():
     global classifier
-    classifier = TextClassifierService("models/rubert_tiny.pt")
+    classifier = TextClassifierService("models/rubert_sber.pt")
     print("Модель загружена")
 
 
@@ -127,19 +81,22 @@ def register(req: RegisterRequest, db: Session = Depends(get_db)):
 
 
 @app.post("/login")
-def login(req: LoginRequest, db: Session = Depends(get_db)):
-    user= UsersCRUD(email=req.email).find(db)
+def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    email = form_data.username
+    password = form_data.password
+
+    user = UsersCRUD(email=email).find(db)
 
     if not user:
         return {'error': 'There is no user with this email.'}
 
     hashed_password = user.hash_password
-    if not verify_password(req.password, hashed_password):
+    if not verify_password(password, hashed_password):
         return {'error': 'Wrong password.'}
-    
+
     access_token = create_access_token(user.id)
 
-    return access_token
+    return {"access_token": access_token, "token_type": "bearer"}
 
 
 
@@ -186,7 +143,7 @@ def analyze(text: str, db: Session = Depends(get_db), current_user: Users = Depe
 
     linguistic_report = create_linguistic_report(text)
 
-    print(f"Linguistic report: {linguistic_report}" )
+    print(f"Linguistic report: {linguistic_report}")
 
     level_cefr = classifier.predict(text)
     
@@ -195,7 +152,7 @@ def analyze(text: str, db: Session = Depends(get_db), current_user: Users = Depe
     print(level_id, type(level_id))
 
     TextsCRUD(
-        user_id=current_user.id,
+        user_id=str(current_user.id),
         text=text,
         linguistic_report=linguistic_report,
         level_id=str(level_id),
@@ -205,6 +162,7 @@ def analyze(text: str, db: Session = Depends(get_db), current_user: Users = Depe
 
 
     return {
+        "warning": "TEXT MAY BE NOT MEANINGFUL. RESULTS MAY BE INACCURATE." if not is_text_meaningful(text) else None,
         "level": level_cefr,
         "linguistic_report": linguistic_report
     }
@@ -217,6 +175,7 @@ def upload(file: UploadFile = File(...), db: Session = Depends(get_db), current_
     file.file.close()
 
     results = []
+    warnings = []
 
     for text in df[0]:
 
@@ -228,6 +187,7 @@ def upload(file: UploadFile = File(...), db: Session = Depends(get_db), current_
             if not errors:
                 ErrorsCRUD(text=text, description='TOO SHORT').add(db)
             results.append("Text is too short. Please provide a text with at least 5 words.")
+            warnings.append(" ")
             continue
         
         if len(text.split()) > 512:
@@ -235,6 +195,7 @@ def upload(file: UploadFile = File(...), db: Session = Depends(get_db), current_
             if not errors:
                 ErrorsCRUD(text=text, description='TOO LONG').add(db)
             results.append("Text is too long. Please provide a text with no more than 512 words.")
+            warnings.append(" ")
             continue
         
         russian_text = clean_russian_words_only(text)
@@ -243,6 +204,7 @@ def upload(file: UploadFile = File(...), db: Session = Depends(get_db), current_
             if not errors:
                 ErrorsCRUD(text=text, description='TOO SHORT').add(db)
             results.append("Text contains too few Russian words. Please provide a text with at least 5 Russian words.")
+            warnings.append(" ")
             continue
         
         text = clean_text(text)
@@ -252,6 +214,7 @@ def upload(file: UploadFile = File(...), db: Session = Depends(get_db), current_
             if not errors:
                 ErrorsCRUD(text=text, description='NOT MEANINGFUL').add(db)
             results.append("The text is not meaningful. Please provide a meaningful text.")
+            warnings.append(" ")
             continue
         
         else:
@@ -265,7 +228,7 @@ def upload(file: UploadFile = File(...), db: Session = Depends(get_db), current_
             level_id = LevelsCRUD(level=level_cefr).find(db)
 
             TextsCRUD(
-                current_user.id,
+                user_id=str(current_user.id),
                 text=text,  
                 linguistic_report=linguistic_report,
                 level_id=str(level_id),
@@ -274,11 +237,18 @@ def upload(file: UploadFile = File(...), db: Session = Depends(get_db), current_
             ).add(db)
 
             results.append(level_cefr)
+            if not is_text_meaningful(text):
+                warnings.append("TEXT MAY BE NOT MEANINGFUL. RESULTS MAY BE INACCURATE.")
+            else:
+                warnings.append(" ")
 
     df['results'] = results
-    df.to_csv('data.csv', index=False, header=False)
-    return FileResponse(path='data.csv', filename='results.csv', media_type='multipart/form-data')
+    df['warnings'] = warnings
+    df.to_csv('results.csv', index=False, header=False)
+    return FileResponse(path='results.csv', filename='results.csv', media_type='multipart/form-data')
 
+
+CEFR_LEVEL_ORDER = ["A1", "A2", "B1", "B2", "C1", "C2"]
 
 @app.post("/history")
 def history(req: HistoryRequest, db: Session = Depends(get_db), current_user: Users = Depends(get_current_user)):
@@ -299,6 +269,7 @@ def history(req: HistoryRequest, db: Session = Depends(get_db), current_user: Us
 
     rows = query.all()
 
+    level_rank = {level: index for index, level in enumerate(CEFR_LEVEL_ORDER)}
     if req.sort_by == "analyzed_at_asc":
         rows.sort(key=lambda x: x.analyzed_at)
     elif req.sort_by == "analyzed_at_desc":
@@ -307,11 +278,43 @@ def history(req: HistoryRequest, db: Session = Depends(get_db), current_user: Us
         rows.sort(key=lambda x: x.text)
     elif req.sort_by == "text_desc":
         rows.sort(key=lambda x: x.text, reverse=True)
+    elif req.sort_by == "level_asc":
+        rows.sort(key=lambda x: level_rank.get(x.level, len(level_rank)))
+    elif req.sort_by == "level_desc":
+        rows.sort(key=lambda x: level_rank.get(x.level, len(level_rank)), reverse=True)
 
     history = [{"text": r.text, "level": r.level, "analyzed_at": r.analyzed_at} for r in rows]
     return {"history": history}
 
 
+@app.get("/", response_class=FileResponse)
+def get_root():
+    return FileResponse(str(Path(__file__).resolve().parent / "frontend" / "index.html"))
+
+
+@app.post("/register")
+def get_register_page():
+    return RedirectResponse(url="/analyze")
+
+
+@app.post("/login", response_class=FileResponse)
+def get_login_page():
+    return FileResponse(str(Path(__file__).resolve().parent / "frontend" / "login.html"))
+
+
+@app.post("/analyze", response_class=FileResponse)
+def get_analyze_page():
+    return FileResponse(str(Path(__file__).resolve().parent / "frontend" / "analyze.html"))
+
+
+@app.post("/upload", response_class=FileResponse)
+def get_upload_page():
+    return FileResponse(str(Path(__file__).resolve().parent / "frontend" / "upload.html"))
+
+
+@app.post("/history", response_class=FileResponse)
+def get_history_page():
+    return FileResponse(str(Path(__file__).resolve().parent / "frontend" / "history.html"))
 
 
 

@@ -9,7 +9,6 @@ from sqlalchemy.ext.declarative import declarative_base
 from pydantic import BaseModel
 from typing import List, Optional, Literal
 
-from utils import level_to_cefr
 
 
 

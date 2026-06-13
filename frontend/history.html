@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>История анализов</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: Inter, system-ui, sans-serif;
+      background: #eef6ff;
+      color: #1f2937;
+    }
+    .container {
+      max-width: 820px;
+      margin: 48px auto;
+      padding: 24px;
+      background: #ffffff;
+      border: 1px solid #d1d5db;
+      border-radius: 16px;
+    }
+    form {
+      display: grid;
+      gap: 18px;
+      max-width: 760px;
+      margin: 0 auto;
+    }
+    h1 {
+      margin-top: 0;
+      color: #0f172a;
+    }
+    label {
+      display: block;
+      margin-top: 18px;
+      font-weight: 600;
+    }
+    input,
+    select {
+      width: 100%;
+      box-sizing: border-box;
+      margin-top: 8px;
+      padding: 12px;
+      border: 1px solid #cbd5e1;
+      border-radius: 12px;
+      background: #f8fafc;
+      color: #0f172a;
+      font-size: 1rem;
+    }
+    select {
+      appearance: none;
+      -webkit-appearance: none;
+      -moz-appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0 L5 6 L10 0 Z' fill='%231f2937'/%3E%3C/svg%3E");
+      background-position: calc(100% - 18px) center;
+      background-size: 10px 6px;
+      background-repeat: no-repeat;
+      padding-right: 40px;
+    }
+    .checkbox-group {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      margin: 8px 0 0;
+      width: 100%;
+      padding: 12px;
+      border: 1px solid #cbd5e1;
+      border-radius: 12px;
+      background: #f8fafc;
+    }
+    .checkbox-group label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: 400;
+      margin: 0;
+    }
+    .checkbox-group input[type="checkbox"] {
+      width: auto;
+      margin: 0;
+      transform: scale(1.1);
+    }
+    button {
+      margin-top: 24px;
+      padding: 14px 18px;
+      border: none;
+      border-radius: 12px;
+      background: #60a5fa;
+      color: #ffffff;
+      font-size: 1rem;
+      cursor: pointer;
+    }
+    button:hover {
+      background: #3b82f6;
+    }
+    .message {
+      margin-top: 18px;
+      padding: 16px;
+      border-radius: 12px;
+      background: #f1f5f9;
+      border: 1px solid #e2e8f0;
+      color: #0f172a;
+      white-space: pre-wrap;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 18px;
+    }
+    th, td {
+      border: 1px solid #e2e8f0;
+      padding: 12px;
+      text-align: left;
+    }
+    th {
+      background: #f8fafc;
+    }
+    .nav {
+      margin-bottom: 24px;
+    }
+    .nav a {
+      color: #2563eb;
+      text-decoration: none;
+    }
+  </style>
+</head>
+<body>
+  <main class="container">
+    <div class="nav"><a href="/">← Главная</a></div>
+    <h1>История анализов</h1>
+    <form id="historyForm">
+      <label for="substring">Искать в тексте</label>
+      <input id="substring" name="substring" type="text" placeholder="Часть текста" />
+      <label>Уровни</label>
+      <div class="checkbox-group">
+        <label><input type="checkbox" name="levels" value="A1"> A1</label>
+        <label><input type="checkbox" name="levels" value="A2"> A2</label>
+        <label><input type="checkbox" name="levels" value="B1"> B1</label>
+        <label><input type="checkbox" name="levels" value="B2"> B2</label>
+        <label><input type="checkbox" name="levels" value="C1"> C1</label>
+        <label><input type="checkbox" name="levels" value="C2"> C2</label>
+      </div>
+      <label for="sort_by">Сортировка</label>
+      <select id="sort_by" name="sort_by">
+        <option value="analyzed_at_desc">Сначала новые</option>
+        <option value="analyzed_at_asc">Сначала старые</option>
+        <option value="text_asc">Текст A→Z</option>
+        <option value="text_desc">Текст Z→A</option>
+        <option value="level_asc">Уровень: просто → сложно</option>
+        <option value="level_desc">Уровень: сложно → просто</option>
+      </select>
+      <button type="submit">Показать историю</button>
+    </form>
+    <div id="message" class="message" style="display:none"></div>
+    <div id="historyResult"></div>
+  </main>
+  <script>
+    const baseUrl = window.location.origin;
+    const form = document.getElementById('historyForm');
+    const message = document.getElementById('message');
+    const historyResult = document.getElementById('historyResult');
+    const renderTable = (rows) => {
+      if (!rows.length) {
+        historyResult.innerHTML = '<p>Нет записей.</p>';
+        return;
+      }
+
+      const rowsHtml = rows.map(row => `
+        <tr>
+          <td>${row.text.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</td>
+          <td>${row.level}</td>
+          <td>${row.analyzed_at}</td>
+        </tr>
+      `).join('');
+
+      historyResult.innerHTML = `
+        <table>
+          <thead>
+            <tr><th>Текст</th><th>Уровень</th><th>Дата</th></tr>
+          </thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>
+      `;
+    };
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      message.style.display = 'none';
+      historyResult.innerHTML = '';
+
+      const token = localStorage.getItem('accessToken');
+      if (!token) {
+        message.style.display = 'block';
+        message.textContent = 'Сначала выполните вход на странице login.html.';
+        return;
+      }
+
+      const substring = form.substring.value.trim() || null;
+      const selectedLevels = Array.from(form.querySelectorAll('input[name="levels"]:checked')).map(input => input.value);
+      const sort_by = form.sort_by.value;
+
+      const payload = {
+        substring,
+        levels: selectedLevels.length ? selectedLevels : null,
+        sort_by
+      };
+
+      try {
+        const response = await fetch(`${baseUrl}/history`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify(payload)
+        });
+        const result = await response.json();
+        if (result.history) {
+          renderTable(result.history);
+        } else {
+          historyResult.innerHTML = '';
+          message.style.display = 'block';
+          message.textContent = result.error ? `Ошибка: ${result.error}` : JSON.stringify(result, null, 2);
+        }
+      } catch (error) {
+        message.style.display = 'block';
+        message.textContent = `Сетевая ошибка: ${error.message}`;
+      }
+    });
+  </script>
+</body>
+</html>
